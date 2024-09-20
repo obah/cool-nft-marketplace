@@ -37,11 +37,15 @@ contract CoolNftMarketplace is AccessControl, IERC721Receiver {
     error InvalidAddress();
     error InsufficientAmount();
     error UnathorizedAccess();
+    error TransactionFailed();
+    error AlreadyAMinter();
 
     bytes32 constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
     uint256 counter;
     uint256 mintFee = 5e17; //0.5 eth to mint an NFT
+    uint256 immutable TRANSACTION_FEE;
+    uint256 public balance;
 
     ICoolNft immutable COOLNFT;
 
@@ -55,22 +59,26 @@ contract CoolNftMarketplace is AccessControl, IERC721Receiver {
         bool isSold;
     }
 
-    constructor(address _nftAddress) {
+    mapping(uint256 => NftListing) public sales;
+
+    constructor(address _nftAddress, uint256 _transactionFee) {
         OWNER = msg.sender;
 
         _grantRole(MINTER_ROLE, msg.sender);
 
         COOLNFT = ICoolNft(_nftAddress);
+        TRANSACTION_FEE = _transactionFee;
     }
+
+    receive() external payable {}
 
     function mintNft(
         address _nftAddress,
-        uint256 _amount,
         string memory _tokenURI
-    ) external onlyRole(MINTER_ROLE) {
+    ) external payable onlyRole(MINTER_ROLE) {
         if (msg.sender == address(0)) revert InvalidAddress();
         if (_nftAddress == address(0)) revert InvalidAddress();
-        if (_amount < mintFee) revert InsufficientAmount();
+        if (msg.value < mintFee) revert InsufficientAmount();
 
         counter = counter + 1;
 
@@ -83,7 +91,7 @@ contract CoolNftMarketplace is AccessControl, IERC721Receiver {
         uint256 _tokenId,
         address _nftAddress,
         address _to
-    ) private {
+    ) private returns (bool transferred_) {
         if (msg.sender == address(0)) revert InvalidAddress();
         if (_nftAddress == address(0)) revert InvalidAddress();
         if (_to == address(0)) revert InvalidAddress();
@@ -94,11 +102,95 @@ contract CoolNftMarketplace is AccessControl, IERC721Receiver {
         if (msg.sender != _owner) revert UnathorizedAccess();
 
         _nft.safeTransferFrom(msg.sender, _to, _tokenId);
+
+        transferred_ = true;
+
+        emit NftTransfered(msg.sender, _to, _nftAddress, _tokenId);
     }
 
-    function sellNft() external {}
+    function sellNft(
+        uint256 _tokenId,
+        address _nftAddress,
+        uint256 _price
+    ) external {
+        if (msg.sender == address(0)) revert InvalidAddress();
+        if (_nftAddress == address(0)) revert InvalidAddress();
 
-    function buyNft() external {}
+        IERC721 _nft = IERC721(_nftAddress);
+        address _owner = _nft.ownerOf(_tokenId);
+
+        if (msg.sender != _owner) revert UnathorizedAccess();
+
+        bool transfer = transferNft(_tokenId, _nftAddress, address(this));
+        if (!transfer) revert TransactionFailed();
+
+        counter = counter + 1;
+
+        NftListing storage sale = sales[counter];
+
+        sale.nft = _nftAddress;
+        sale.seller = msg.sender;
+        sale.tokenId = _tokenId;
+        sale.price = _price;
+
+        emit NftListed(msg.sender, _nftAddress, _tokenId, _price);
+    }
+
+    function getNftListing(
+        uint256 _listingId
+    ) external view returns (NftListing memory) {
+        return sales[_listingId];
+    }
+
+    function buyNft(uint256 _listingId) external payable {
+        if (msg.sender == address(0)) revert InvalidAddress();
+
+        NftListing storage listing = sales[_listingId];
+
+        if (msg.value < listing.price) revert InsufficientAmount();
+
+        listing.isSold = true;
+
+        uint256 _sellerFee = msg.value - TRANSACTION_FEE;
+
+        (bool feePaid, ) = address(this).call{value: TRANSACTION_FEE}("");
+        if (!feePaid) revert TransactionFailed();
+
+        balance = balance + TRANSACTION_FEE;
+
+        (bool pricePaid, ) = listing.seller.call{value: _sellerFee}("");
+        if (!pricePaid) revert TransactionFailed();
+
+        bool transfer = transferNft(listing.tokenId, address(this), msg.sender);
+        if (!transfer) revert TransactionFailed();
+
+        emit NftBought(
+            msg.sender,
+            listing.seller,
+            listing.nft,
+            listing.tokenId
+        );
+    }
+
+    function withdraw(uint256 _amount) external {
+        if (msg.sender == address(0)) revert InvalidAddress();
+        if (msg.sender != OWNER) revert UnathorizedAccess();
+        if (_amount > balance) revert InsufficientAmount();
+
+        (bool sent, ) = OWNER.call{value: _amount}("");
+        if (!sent) revert TransactionFailed();
+
+        balance = balance - _amount;
+    }
+
+    function addMinter(address _account) external {
+        if (msg.sender != OWNER) revert UnathorizedAccess();
+        if (msg.sender == address(0)) revert InvalidAddress();
+        if (_account == address(0)) revert InvalidAddress();
+        if (hasRole(MINTER_ROLE, _account)) revert AlreadyAMinter();
+
+        grantRole(MINTER_ROLE, _account);
+    }
 
     function onERC721Received(
         address operator,
