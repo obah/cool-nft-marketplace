@@ -7,6 +7,3 @@ const CoolNftModule = buildModule("CoolNftModule", (m) => {
 });
 
 export default CoolNftModule;
-
-//address - 0x3F684E473Fc5e9202aA642062B25d0002fFf5bAa
-//link - https://sepolia-blockscout.lisk.com/address/0x3F684E473Fc5e9202aA642062B25d0002fFf5bAa#code
